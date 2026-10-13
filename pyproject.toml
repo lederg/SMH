@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smh"
+version = "0.2.0"
+description = "Scientific Method Harness — a research journal / claim-graph / fact-gate harness for disciplined research, driven through Claude Code."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "markdown>=3.5",
+    "plotly>=6.0",
+    "matplotlib>=3.7",
+    "networkx>=3.0",
+]
+
+[project.scripts]
+smh = "smh.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["smh*"]
+
+[tool.setuptools.package-data]
+smh = ["skills/**/*", "pipeline/README.md"]

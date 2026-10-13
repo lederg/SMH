@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+# per-project SMH runtime state + rendered views live in the PROJECT dir, not here
+.smh/
+Reports/
