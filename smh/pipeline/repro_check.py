@@ -228,32 +228,45 @@ def check_config_provenance(root=None):
             source = cells[5].replace("\x00", "|") if len(cells) > 5 else ""
             tokens = cs.config_tokens(desc)
             tags = cs.tags_in_source(source)
+            tag = f"{project}:{reid}"
             if not tags:
                 if tokens:
-                    rows.append([reid, "unresolved",
+                    rows.append([tag, "unresolved",
                                  "config token present but no Source tag resolves "
                                  "to a job record (GC'd?)"])
                 continue
-            tag = f"{project}:{reid}"
+            sigs = [cs.signature_for_tag(t, project) for t in tags]
             # ENFORCE only on rows that engage the convention (carry a ⚙ token).
             # An un-backfilled row that references an invalid run is flagged
             # `backfill_owed` (non-fatal) — best-effort retrofit must not red the
             # build on the pre-existing past; the backfill converts it, and from
             # then on drift/undisclosed hard-fail.
             if not tokens:
-                invalid = sorted({s.string for s in
-                                  (cs.signature_for_tag(t, project) for t in tags)
-                                  if s.invalid})
+                invalid = sorted({s.string for s in sigs if s.invalid})
                 if invalid:
-                    rows.append([tag, "backfill_owed",
-                                 f"invalid config in runs, no ⚙ token yet: "
-                                 f"{invalid}"])
+                    row = [tag, "backfill_owed",
+                           f"invalid config in runs, no ⚙ token yet: {invalid}"]
                 else:
-                    rows.append([tag, "skipped", "no config token (pre-backfill)"])
-                continue
-            rows.append([tag] + _token_row_status(tokens, tags, desc, project))
+                    row = [tag, "skipped", "no config token (pre-backfill)"]
+            else:
+                row = [tag] + _token_row_status(tokens, tags, desc, project)
+            row[2] += code_advisory(sigs)
+            rows.append(row)
     ok = not any(r[1] in ("drift", "undisclosed") for r in rows)
     return ok, rows
+
+
+def code_advisory(sigs):
+    """An ADVISORY suffix when a row's runs were produced by more than one code
+    version (`ConfigSignature.code_token`, the staged checkout sha(s)): a
+    replication claim whose arms ran on different commits is weaker than it
+    reads. Never a status change — the config-equality key deliberately
+    excludes the sha (see `adapters.config_sig.ConfigSignature.code`), so this
+    only annotates. "" when the runs agree or carry no code record."""
+    tokens = sorted({s.code_token for s in sigs if s.code_token})
+    if len(tokens) <= 1:
+        return ""
+    return f"; ADVISORY: runs span {len(tokens)} code versions: {', '.join(tokens)}"
 
 
 # --- driver + state -----------------------------------------------------------

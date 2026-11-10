@@ -47,41 +47,47 @@ PRESENTATIONS = os.path.join(ROOT, "presentations")
 
 
 def _default_figure_catalog(root=None):
-    """The instance `FigureCatalog`, resolved exactly like
-    `facts._default_catalog` resolves the FactsCatalog. A stranger's repo names
-    its catalog in `smh.toml` (`figure_catalog = "module:Class"`); absent that key
-    (the LDP repo, or a co-located repo that keeps LDP the default) fall back to
-    `LdpFigureCatalog` via a lazy import — so core stays decoupled from any
-    instance figure module and LDP output is byte-unchanged."""
+    """The default project's `FigureCatalog`, resolved exactly like
+    `facts._default_catalog`: `config.catalog_ref(root, "figure_catalog")`
+    (`[projects.<default>]`, or a solo repo's top-level key); none registered →
+    `NullFigureCatalog` (no figures, one stderr line). Core imports no instance
+    figure module by name."""
     from smh import config
-    cfg = config.load_config(root or ROOT)
-    if cfg and cfg.get("figure_catalog"):
-        return config.instantiate(cfg["figure_catalog"])
-    from ldp.figures import LdpFigureCatalog
-    return LdpFigureCatalog()
+    root = root or ROOT
+    ref = config.catalog_ref(root, "figure_catalog")
+    if ref:
+        return config.instantiate(ref)
+    return _null_figures(config.repo_default_project(root))
+
+
+def _null_figures(project):
+    from smh.adapters.report import NullFigureCatalog
+    print(f"[build] project {project!r} registers no figure_catalog — "
+          f"no figures will be injected", file=sys.stderr)
+    return NullFigureCatalog()
 
 
 def _resolve_project(project, root=ROOT):
     """Resolve a co-located instance to `(facts_catalog, figure_catalog,
     presentations_dir, label)`.
 
-    `project=None` = the *default* instance: the top-level smh.toml catalogs, else
-    the LDP fallbacks + repo-root `presentations/`. Every existing call takes this
-    branch and renders byte-identically. A *named* project reads its catalogs +
-    presentations dir from smh.toml's `[projects.<name>]` table (a per-key omission
-    falls back to the default), so a BitDistiller deck resolves against the
-    BitDistiller catalogs without core knowing either by name."""
-    from smh.pipeline.facts import _default_catalog
+    `project=None` = the *default* project (`config.repo_default_project`): its
+    `[projects.<default>]` catalogs + repo-root `presentations/`. Every existing
+    call takes this branch and renders byte-identically. A *named* project reads
+    its catalogs + presentations dir from its own `[projects.<name>]` table; a
+    catalog it does not register resolves to a NULL one (empty facts over its own
+    ledger / no figures) — never to another project's."""
+    from smh import config
+    from smh.pipeline.facts import _default_catalog, null_catalog
     if project is None:
         return _default_catalog(root), _default_figure_catalog(root), PRESENTATIONS, "LDP"
-    from smh import config
     pc = config.project_config(root, project)
     if not pc:
         sys.exit(f"smh.toml has no [projects.{project}] table (project={project!r})")
-    facts_cat = (config.instantiate(pc["facts_catalog"]) if pc.get("facts_catalog")
-                 else _default_catalog(root))
-    fig_cat = (config.instantiate(pc["figure_catalog"]) if pc.get("figure_catalog")
-               else _default_figure_catalog(root))
+    facts_ref = config.catalog_ref(root, "facts_catalog", project)
+    fig_ref = config.catalog_ref(root, "figure_catalog", project)
+    facts_cat = config.instantiate(facts_ref) if facts_ref else null_catalog(project, root)
+    fig_cat = config.instantiate(fig_ref) if fig_ref else _null_figures(project)
     pres = (os.path.join(root, pc["presentations"]) if pc.get("presentations")
             else PRESENTATIONS)
     return facts_cat, fig_cat, pres, pc.get("label", project)

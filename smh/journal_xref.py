@@ -29,15 +29,9 @@ JOURNAL_FILES = ("JOURNAL.md", "EVIDENCE.md")
 # T4a: co-located multi-project ledger. Each entry is (project, [files]); the
 # loader stamps every node with the project of the file it came from, so two
 # projects can share one graph without their short IDs (H1, RE-23) colliding —
-# the namespaced key is the pair (project, id). The default keeps LDP the sole
-# project, so every existing caller is byte-for-byte unchanged.
-DEFAULT_LEDGER = (("ldp", JOURNAL_FILES),
-                  ("fracbits", ("FRACBITS_JOURNAL.md", "FRACBITS_EVIDENCE.md")),
-                  ("bitdistiller", ("BITDISTILLER_JOURNAL.md",
-                                    "BITDISTILLER_EVIDENCE.md")),
-                  # the meta-instance: the harness studying itself (VISION pillar
-                  # 4). Process-history claims, no GPU runs / no MeasurementCatalog.
-                  ("smh", ("SMH_JOURNAL.md", "SMH_EVIDENCE.md")))
+# the namespaced key is the pair (project, id). The map lives in `smh.toml`
+# (`[projects.<name>].journal`, or a solo repo's top-level `ledger`); there is no
+# in-code copy any more (the former hardcoded map drifted from the file, 2026-11-02).
 
 
 def _read_files(root, files):
@@ -53,11 +47,11 @@ def resolved_ledger(root=None):
     here instead of re-hardcoding the list.
 
     Resolution order (R7 — `smh.toml [projects]` is the single registration seam):
-      1. an explicit top-level `ledger` key (a stranger repo naming its ledger);
+      1. an explicit top-level `ledger` key (a solo repo naming its ledger);
       2. else the `[projects.<name>].journal` file lists, in table order — the
          canonical per-project registration for a co-located repo like this one;
-      3. else `DEFAULT_LEDGER` — the file-absent (or projects-absent) fallback, so
-         removing `smh.toml` entirely still yields the same four-project map.
+      3. else `()` — a root with no `smh.toml` (or no journals registered) has NO
+         ledger. There is no in-code project map to fall back to.
     `.get` not `[...]` throughout: a partial smh.toml never KeyErrors."""
     from smh import config
     root = root or config.resolve_root(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -70,7 +64,7 @@ def resolved_ledger(root=None):
                  if p.get("journal")]
         if built:
             return built
-    return DEFAULT_LEDGER
+    return ()
 
 
 def load_segments(root=None, ledger=None):
@@ -79,11 +73,9 @@ def load_segments(root=None, ledger=None):
     and concatenated on their own, so the project of every claim is the project
     of the segment it parses from.
 
-    `ledger` resolution (when not passed explicitly): a generated `smh.toml` at
-    `root` names a stranger's ledger; absent it (the LDP repo), fall back to
-    `DEFAULT_LEDGER`. The lookup is runtime + root-aware on purpose — it cannot
-    live on the module constant, which has no `root` at import time. LDP ships no
-    `smh.toml`, so this branch is byte-for-byte the old `DEFAULT_LEDGER` path.
+    `ledger` resolution (when not passed explicitly): `resolved_ledger(root)` —
+    the `smh.toml` at `root`. The lookup is runtime + root-aware on purpose — it
+    cannot live on a module constant, which has no `root` at import time.
 
     build_graph() consumes this list directly; node IDs are deduped/looked-up on
     (project, id), so a 2nd project's `H1` is distinct from LDP's `H1`."""
@@ -95,18 +87,19 @@ def load_segments(root=None, ledger=None):
 
 
 def load_journal(root=None):
-    """Read the split journal and return the combined markdown — the single
-    contract point for the LDP project. JOURNAL.md (claims+conventions) ++
-    EVIDENCE.md (evidence+queue+changelog). Kept as the back-compatible single-
+    """Read the DEFAULT project's split journal and return the combined markdown
+    — the single contract point for the default (LDP) project. Resolves the
+    files through the ledger (`[projects.<default>].journal`), falling back to
+    the conventional `JOURNAL_FILES` pair. Kept as the back-compatible single-
     project string view; multi-project callers use load_segments()."""
     from smh import config
     root = root or config.resolve_root(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return _read_files(root, JOURNAL_FILES)
+    files = ledger_files(config.repo_default_project(root), root) or JOURNAL_FILES
+    return _read_files(root, files)
 
 
 def ledger_files(project, root=None):
-    """The ledger file list for one co-located project (from `smh.toml` if present,
-    else `DEFAULT_LEDGER`), or None. Lets the round name a project's actual sink
+    """The ledger file list for one co-located project (from `smh.toml`), or None. Lets the round name a project's actual sink
     files (FracBits writes FRACBITS_*, LDP writes JOURNAL/EVIDENCE)."""
     for proj, files in resolved_ledger(root):
         if proj == project:

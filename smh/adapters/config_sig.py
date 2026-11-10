@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass, field
-from typing import Optional, Protocol, runtime_checkable
+from typing import Optional, Protocol, Sequence, runtime_checkable
 
 # `--flag=value`, `--flag value` (value is the next non-flag token), and bare
 # `ENV=value` shell assignments. Train jobs pass quant config as `ENV=val`
@@ -97,10 +97,51 @@ class ConfigSignature:
     #: outside the subset is never truly lost, and a variance pass can surface a
     #: SWEPT knob (an LR sweep) that the curated string would otherwise hide.
     raw: dict = field(default_factory=dict)
+    #: code provenance: {repo: {sha, short, dirty, n_dirty}} of the checkouts the
+    #: run's code was staged from (see `job_code`). DISPLAY + advisory only — it is
+    #: deliberately NOT folded into `string`, which is the gate's equality key: a
+    #: sha in the key would make every commit break row comparability, the
+    #: opposite of what a replication check wants. Rendered via `render_code`.
+    code: dict = field(default_factory=dict)
 
     @property
     def flagged(self) -> bool:
         return self.invalid is not None
+
+    @property
+    def code_token(self) -> str:
+        return render_code(self.code)
+
+
+def job_code(job: dict, artifact: Optional[dict] = None) -> dict:
+    """The authoritative code-version dict for a job: the checkout the scheduler
+    actually rsynced to the box (`job["code"]["staged"]`, recorded at dispatch)
+    wins; else the submitter's checkout (`"submit"`); else whatever the run's own
+    artifact recorded (resolved_config.json "code", for pre-scheduler/local runs).
+    {} when nothing is known (pre-2026-11 job records)."""
+    c = (job or {}).get("code") or {}
+    for key in ("staged", "submit"):
+        v = c.get(key)
+        if isinstance(v, dict) and any(isinstance(x, dict) and x.get("sha") for x in v.values()):
+            return {k: x for k, x in v.items() if isinstance(x, dict)}
+    a = (artifact or {}).get("code") or {}
+    return {k: x for k, x in a.items() if isinstance(x, dict)}
+
+
+def render_code(code: dict) -> str:
+    """`ldp@8ad6ede6 fork@74b950be*` — one `<repo>@<short>` per checkout, `*` when
+    the checkout had uncommitted tracked changes. "" when unknown."""
+    if not code:
+        return ""
+    alias = {"bitdistiller_fork": "fork"}
+    parts = []
+    for name in sorted(code):
+        x = code[name] or {}
+        short = x.get("short") or (x.get("sha") or "")[:8]
+        if not short:
+            continue
+        parts.append(f"{alias.get(name, name)}@{short}{'*' if x.get('dirty') else ''}")
+    return " ".join(parts)
 
 
 # A result whose job record was garbage-collected (ckpt/log GC) can't have its
@@ -108,6 +149,36 @@ class ConfigSignature:
 # "no special config", the exact failure this adapter exists to prevent).
 UNRECOVERED = ConfigSignature(string="config: unrecovered", knobs={},
                               source="unrecovered")
+
+
+def producer_chain(job: dict, lookup, max_depth: int = 8) -> list:
+    """The PRODUCER chain of a job: the job records it depends on, nearest first
+    (its `deps`, then their `deps`, …), de-duplicated and depth-bounded.
+
+    A result's deployed configuration is a property of the CHAIN that produced
+    it, not of its own command line: an eval job that scores a checkpoint whose
+    weights were already quantized upstream (block-AP, bit-by-bit, a QF export)
+    honestly says `--bits 16` — the weight config lives on the producer. Core
+    walks the chain through the scheduler's own `deps` (tags) via `lookup(tag) ->
+    job | None`; the instance's `signature(job, chain)` decides which upstream
+    knobs persist into the checkpoint. Design: `docs/DESIGN_config_sig_chain.md`."""
+    out, seen = [], {job.get("tag")}
+    frontier = [t for t in (job.get("deps") or []) if isinstance(t, str)]
+    depth = 0
+    while frontier and depth < max_depth:
+        nxt = []
+        for t in frontier:
+            if t in seen:
+                continue
+            seen.add(t)
+            j = lookup(t)
+            if not j:
+                continue
+            out.append(j)
+            nxt.extend(x for x in (j.get("deps") or []) if isinstance(x, str))
+        frontier = nxt
+        depth += 1
+    return out
 
 
 @runtime_checkable
@@ -118,8 +189,13 @@ class ConfigSignatureCatalog(Protocol):
     decides which knobs are load-bearing, how they render, and which are invalid.
     """
 
-    def signature(self, job: dict) -> ConfigSignature:
-        """The config signature for a finished scheduler job record. When the
-        job lacks a usable config (GC'd / never had one), return
-        `config_sig.UNRECOVERED` rather than raising."""
+    def signature(self, job: dict, chain: Sequence[dict] = ()) -> ConfigSignature:
+        """The config signature for a finished scheduler job record. `chain` is
+        the job's producer chain (`producer_chain`, nearest first) — the
+        instance folds upstream knobs that persist into the artifact the job
+        consumed (a baked-quantized checkpoint's weight format) under the job's
+        own deployed config. An instance that ignores the chain may omit the
+        parameter; core calls `signature(job)` then. When the job lacks a usable
+        config (GC'd / never had one), return `config_sig.UNRECOVERED` rather
+        than raising."""
         ...

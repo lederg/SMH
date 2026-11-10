@@ -292,6 +292,9 @@ def collect(state):
                "config_sig": csig.string, "config_sig_plain": csig.string,
                "config_invalid": csig.invalid,
                "config_knobs": csig.knobs, "config_raw": csig.raw,
+               # code provenance (display/advisory, NOT part of the gate key):
+               # {repo: {sha, short, dirty}} + its `ldp@sha fork@sha*` token.
+               "code": csig.code, "code_token": csig.code_token,
                "synced": m["synced"], "plot": plot,
                "family": fam["family"] if fam else None, "model": model,
                "baseline": fam["baseline"] if fam else None,
@@ -542,6 +545,8 @@ def _cfg_cell(p):
     """The machine-derived config signature for a digest point, with a ⚠ when the
     config is in the known-collapse registry (per-token fp4 → non-deployable)."""
     sig = p.get("config_sig") or "—"
+    if p.get("code_token"):
+        sig = f"{sig} · {p['code_token']}"
     return f"⚠ {sig}" if p.get("config_invalid") else sig
 
 

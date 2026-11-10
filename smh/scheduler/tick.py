@@ -269,6 +269,12 @@ def tick_body(sm, runner):
             # drop slots whose runtime cap this job's estimate can't meet
             # (short-only mode), then fit normally.
             elig = [s for s in slots if sm._slot_eta_ok(s, job, calib, secstep)]
+            # PINNED-ONLY slots (a `dispatch: "pinned"` pool entry — the opt-in /
+            # test mode of DESIGN_slurm_runner §3.9a): offered ONLY to a job that
+            # explicitly --remote pins that box (by name or remote string).
+            _pin = job.get("remote")
+            elig = [s for s in elig if not s.get("pinned_only")
+                    or _pin in (s.get("remote"), s.get("remote_name"))]
             # observability (handoff refuse_scheduled_off): a pending timed OFF
             # shrank a fitting box's runtime cap below this job's est, so it can't
             # land there before the box drains. Emit per (job, box), once per tick
@@ -284,7 +290,10 @@ def tick_body(sm, runner):
             pin = job.get("remote")
             if pin:                              # explicit --remote: hard box-pin.
                 elig = [s for s in elig          # input is box-local (e.g. a box-
-                        if s.get("remote") == pin]   # local ckpt) -> MUST land here.
+                        if pin in (s.get("remote"), s.get("remote_name"))]  # local
+                                                 # ckpt) -> MUST land here. A pool
+                                                 # entry NAME pins too (slurm entries
+                                                 # share one controller remote).
                 # belt-and-suspenders: a pin must NOT override off-duty. compute_slots
                 # already drops off-duty cards (state=="off"), but assert it here so an
                 # explicit --remote can never smuggle a job onto an off-duty box:gpu.
@@ -406,6 +415,7 @@ def tick_body(sm, runner):
                 need = job.get("min_gpu_gb") or cfg["default_job_gb"]
                 idle = [s for s in sm.fit_slots(slots, need, None)
                         if s["state"] == "empty" and sm._slot_eta_ok(s, job, calib, secstep)
+                        and not s.get("pinned_only")
                         and (prod_pin is None or s.get("remote") in prod_pin)]
                 if not idle:
                     continue

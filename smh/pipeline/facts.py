@@ -31,21 +31,36 @@ NUM_RE = re.compile(r"(?<![\w.])([-+]?\d+(?:\.\d+)?)(?![\w])")
 
 
 def _default_catalog(root=None):
-    """The instance `FactsCatalog`. A stranger's repo carries an `smh.toml` whose
-    `facts_catalog = "module:Class"` key names its catalog — resolve and return
-    that. Absent the config (the LDP repo, no `smh.toml`), fall back to the
-    `LdpFactsCatalog` (lazy import — keeps this core machinery decoupled from the
-    instance and dodges an import cycle). The catalog owns *which files are the
-    ledger* and *which named facts to expose*; everything operating on a catalog
-    stays here. The zero-arg call (gate/build/propose) resolves against the repo
-    root, so LDP is byte-unchanged."""
+    """The default project's `FactsCatalog`, resolved through
+    `config.catalog_ref(root, "facts_catalog")` (`[projects.<default>]`, or a
+    solo repo's top-level key). A default project that registers no facts
+    catalog gets `null_catalog` — an EMPTY named-fact map over its own ledger
+    files, so the gate's number bag is still the project's journal and nothing
+    is borrowed from another project. The zero-arg call (gate/build/propose)
+    resolves against the repo root."""
     from smh import config
-    cfg = config.load_config(root or ROOT)
-    if cfg and cfg.get("facts_catalog"):
-        mod, cls = cfg["facts_catalog"].split(":")
-        return getattr(importlib.import_module(mod), cls)()
-    from ldp.facts_catalog import LdpFactsCatalog
-    return LdpFactsCatalog()
+    root = root or ROOT
+    ref = config.catalog_ref(root, "facts_catalog")
+    if ref:
+        return config.instantiate(ref)
+    return null_catalog(config.repo_default_project(root), root)
+
+
+def null_catalog(project, root=None):
+    """A `FactsCatalog` with NO named facts whose `journal_text` is `project`'s
+    own ledger — what a project that registers no `facts_catalog` gets, so its
+    gate still sees its numbers but a deck has no named facts to cite. Logs one
+    line: silent substitution is how the 2026-11 audit found LDP's facts being
+    reported for other projects."""
+    from smh import journal_xref as jx
+    from smh.adapters.facts import RegexFactsCatalog
+    root = root or ROOT
+    files = jx.ledger_files(project, root) or ()
+    print(f"[facts] project {project!r} registers no facts_catalog — "
+          f"empty named-fact catalog over {list(files) or 'NO ledger files'}",
+          file=sys.stderr)
+    return RegexFactsCatalog(ledger_paths=[os.path.join(root, f) for f in files],
+                             facts={})
 
 
 def _text():

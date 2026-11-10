@@ -3,19 +3,21 @@
 Mirrors `pipeline/measure.py`: maps a project name to its
 `ConfigSignatureCatalog`, so ingest / the gate / repro_check derive a result's
 config *in its project's terms* (bitdistiller's `fp4/pt` vs `fp4/g64` means
-nothing to LDP). `smh.toml` wins (`config_signature_catalog`, top-level or
-`[projects.<name>]`); else the `_REGISTRY` fallback; a project with no catalog
+nothing to LDP). resolved via `config.catalog_ref(..., "config_signature_catalog", project)`
+(`[projects.<name>]` in `smh.toml`); a project with no catalog registered
 lands on `GenericConfigSignature` (renders whatever knobs the cmd carries, no
 invalid registry) so a stranger's repo Just Works and LDP/FracBits get a
 best-effort signature without a hand-authored knob list.
 
 Also owns `signature_for_tag(tag, project)`: the RE row's Source column names a
-run TAG, but the config lives on the scheduler JOB behind that tag — this finds
-the job record (done/ then failed/) and returns its signature, or UNRECOVERED
-when the job JSON was GC'd.
+run TAG, but the config lives on the scheduler JOB behind that tag AND on the
+jobs it depends on (`deps` — the train / block-AP arm whose checkpoint it
+scored). This finds the job record (done/ then failed/), walks its producer
+chain, and returns the catalog's fold over both, or UNRECOVERED when the job
+JSON was GC'd.
 """
 import glob
-import importlib
+import inspect
 import itertools
 import json
 import os
@@ -23,19 +25,17 @@ import re
 
 from smh.config import resolve_root
 from smh.adapters.config_sig import (ConfigSignature, ConfigSignatureCatalog,
-                                     UNRECOVERED, parse_cmd)
+                                     UNRECOVERED, job_code, parse_cmd,
+                                     producer_chain)
 
 ROOT = resolve_root(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 DONE = os.path.join(ROOT, "scheduler", "done")
 FAILED = os.path.join(ROOT, "scheduler", "failed")
 
-# project -> "module:Class". A co-located project with load-bearing knobs / a
-# collapse registry adds a row; everything else falls to GenericConfigSignature.
-_REGISTRY = {
-    "bitdistiller":
-        "bitdistiller.config_signature:BitDistillerConfigSignature",
-}
-DEFAULT = "__generic__"
+# No in-code project→class table: a project with load-bearing knobs / a collapse
+# registry registers `config_signature_catalog` in its `smh.toml` table;
+# everything else falls to GenericConfigSignature.
+_GENERIC = "__generic__"
 
 _cache = {}
 _tag_index = None
@@ -50,40 +50,29 @@ class GenericConfigSignature(ConfigSignatureCatalog):
     #: knobs too noisy to headline (paths, model ids, shell scaffolding)
     _SKIP = {"model", "out_json", "eval_ppl"}
 
-    def signature(self, job: dict) -> ConfigSignature:
+    def signature(self, job: dict, chain=()) -> ConfigSignature:
+        # the producer chain is ignored on purpose: without a knob list there is
+        # no way to tell which upstream knobs persist into the artifact.
         knobs = parse_cmd(job.get("cmd") or "")
         if not knobs:
-            return ConfigSignature(**{**UNRECOVERED.__dict__, "source": job.get("id")})
+            return ConfigSignature(**{**UNRECOVERED.__dict__, "source": job.get("id"),
+                                      "code": job_code(job)})
         shown = {k: v for k, v in sorted(knobs.items())
                  if k not in self._SKIP and v not in ("", None)}
         string = " ".join(f"{k}={v}" for k, v in list(shown.items())[:6]) or "config: (none)"
         return ConfigSignature(string=string, knobs=knobs, source=job.get("id"),
-                               raw=dict(knobs))
-
-
-def _from_config(project, root=None):
-    """The `"module:Class"` named in `smh.toml` for `project`, or None."""
-    from smh import config
-    root = root or ROOT
-    if project is None:
-        cfg = config.load_config(root)
-        return cfg.get("config_signature_catalog") if cfg else None
-    pc = config.project_config(root, project)
-    return pc.get("config_signature_catalog") if pc else None
+                               raw=dict(knobs), code=job_code(job))
 
 
 def config_sig_for(project=None):
-    """The `ConfigSignatureCatalog` for `project`. `smh.toml` wins; else the
-    `_REGISTRY`; else the generic fallback."""
-    ref = _from_config(project)
-    key = ref or (project if project in _REGISTRY else DEFAULT)
+    """The `ConfigSignatureCatalog` for `project` (None = the repo-default
+    project): the `config_signature_catalog` registered in its `smh.toml` table,
+    else the generic fallback."""
+    from smh import config
+    ref = config.catalog_ref(ROOT, "config_signature_catalog", project)
+    key = ref or _GENERIC
     if key not in _cache:
-        if key == DEFAULT:
-            _cache[key] = GenericConfigSignature()
-        else:
-            spec = ref or _REGISTRY[key]
-            mod, cls = spec.split(":")
-            _cache[key] = getattr(importlib.import_module(mod), cls)()
+        _cache[key] = config.instantiate(ref) if ref else GenericConfigSignature()
     return _cache[key]
 
 
@@ -106,14 +95,47 @@ def _job_for_tag(tag):
     return _tag_index.get(tag)
 
 
+def producers_for(job):
+    """The job's producer chain (`adapters.config_sig.producer_chain`) resolved
+    through the done/failed tag index — nearest producer first."""
+    _job_for_tag("")                      # force the tag index to build
+    return producer_chain(job, _job_for_tag)
+
+
+def _takes_chain(cat):
+    """Whether `cat.signature` accepts the `chain` argument (an instance written
+    against the pre-chain Protocol may not) — checked once per catalog class."""
+    cls = type(cat)
+    if cls not in _takes_chain_cache:
+        try:
+            params = inspect.signature(cat.signature).parameters
+            _takes_chain_cache[cls] = "chain" in params or any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        except (TypeError, ValueError):
+            _takes_chain_cache[cls] = False
+    return _takes_chain_cache[cls]
+
+
+_takes_chain_cache = {}
+
+
+def signature_of(job, project=None):
+    """Config signature of a scheduler job record, folded over its producer
+    chain by the project's catalog."""
+    cat = config_sig_for(project)
+    if _takes_chain(cat):
+        return cat.signature(job, chain=producers_for(job))
+    return cat.signature(job)
+
+
 def signature_for_tag(tag, project=None):
     """Config signature for a run TAG (as it appears in an RE row's Source),
-    resolved via its scheduler job record. UNRECOVERED when no job carries the
-    tag (GC'd / never scheduled)."""
+    resolved via its scheduler job record AND the producer chain behind it
+    (`deps`). UNRECOVERED when no job carries the tag (GC'd / never scheduled)."""
     job = _job_for_tag(tag)
     if job is None:
         return ConfigSignature(**{**UNRECOVERED.__dict__, "source": f"tag:{tag}"})
-    return config_sig_for(project).signature(job)
+    return signature_of(job, project)
 
 
 def claim_for_tag(tag):

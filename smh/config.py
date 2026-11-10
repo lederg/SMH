@@ -1,11 +1,13 @@
 """SMH instance config — `smh.toml` at the project root.
 
-A stranger's repo carries a generated `smh.toml` naming its ledger files and its
-FactsCatalog. The two LDP-hardcoded seams — `journal_xref.DEFAULT_LEDGER` and
-`pipeline.facts._default_catalog` — read this to resolve the *instance* instead of
-defaulting to LDP. LDP itself ships NO `smh.toml`, so `load_config` returns None
-and both seams fall back to their byte-unchanged LDP defaults (the fallbacks are
-runtime + root-aware so this stays a pure addition).
+Every repo that uses smh carries one: a stranger's generated `smh.toml` names its
+ledger files and catalogs at top level; the co-located reference repo registers
+each project in a `[projects.<name>]` table (R7: the SINGLE registration seam).
+`catalog_ref` is the one resolver the seams (`journal_xref.resolved_ledger`,
+`pipeline.facts._default_catalog`, `pipeline.build`, `pipeline.measure`,
+`pipeline.config_sig`) route through — an unregistered key resolves to None and
+the caller substitutes a null catalog, never another project's. There is no
+in-code per-project fallback table any more (it drifted; 2026-11-02 audit).
 
 Stdlib `tomllib` (Python 3.11+), no third-party dep.
 """
@@ -252,6 +254,32 @@ def current_defaults(root, project):
     The ONE resolver every consumer routes through (shell submit / focus banner /
     session brief) instead of hardcoding a subject/regime."""
     return resolve_current_defaults(root, project)[0]
+
+
+def catalog_ref(root, key, project=None):
+    """The `"module:Class"` reference registered for catalog `key` of `project`
+    (`facts_catalog`, `figure_catalog`, `measurement_catalog`,
+    `config_signature_catalog`), or None when none is registered.
+
+    THE one resolver every seam routes through (R7: `[projects]` is the single
+    registration seam — there is no in-code per-project fallback table anywhere
+    else). `project=None` means the repo-default project (`repo_default_project`),
+    so the default path resolves to `[projects.ldp]` here and stays byte-identical.
+    Order: `[projects.<p>].<key>` wins; for the repo-default project only, the
+    top-level `<key>` is the fallback (a scaffolded solo repo writes its catalogs
+    at top level with no `[projects]` table). None ⇒ the caller substitutes a
+    null/no-op catalog (never another project's)."""
+    cfg = load_config(root)
+    if not cfg:
+        return None
+    default = repo_default_project(root)
+    p = project or default
+    pc = (cfg.get("projects") or {}).get(p) or {}
+    if isinstance(pc.get(key), str) and pc[key].strip():
+        return pc[key]
+    if p == default and isinstance(cfg.get(key), str) and cfg[key].strip():
+        return cfg[key]
+    return None
 
 
 def project_config(root, project):

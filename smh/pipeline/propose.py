@@ -218,7 +218,8 @@ def journal_context(claim, queued=None):
              "points": [{**{k: p.get(k) for k in ("tag", "bits", "eval",
                          "delta_vs_floor", "family", "plot")},
                          "config": p.get("config_sig"),
-                         "config_invalid": p.get("config_invalid")}
+                         "config_invalid": p.get("config_invalid"),
+                         "code": p.get("code_token")}
                         for p in c["points"]]}
     # adapter-5: the machine-derived config each point ran. The RE row MUST carry
     # it (bold ⚙ prefix) so a per-token-collapse cell can't be prose-labeled
@@ -236,6 +237,10 @@ def journal_context(claim, queued=None):
          "using the EXACT `config` string from the verified facts below. The gate "
          "re-derives it from the run's job record and rejects a missing/mismatched "
          "prefix. Do NOT paraphrase the config in prose in place of the token.",
+         "- **Code provenance:** when a point carries a `code` token "
+         "(`ldp@<sha> fork@<sha>`, `*` = dirty checkout), write it right after the "
+         "⚙ token as `(code: <token>)`. It is display-only (not gated), but it is "
+         "what lets a later replication name the exact code a row ran on.",
          "- Follow science-vs-infra: a science finding is an RE row / H-section "
          "update; infra/tooling is a §4 changelog C-entry, NOT an RE row.",
          "- Convert any relative date to absolute. Minimal edit — tighten n/Δ/σ "
@@ -369,7 +374,7 @@ def _catalog_kinds(cat):
     leaf = getattr(cat, "LEAF_KINDS", None)
     if leaf:
         return tuple(leaf)
-    return ("EVAL", "B2") + tuple(getattr(cat, "_extra", {}) or ())
+    return ("EVAL", "B2") + tuple(getattr(cat, "extra_kinds", ()) or ())
 
 
 def _entry_tags(text):

@@ -50,4 +50,22 @@ assert res.exit == 0 and log == "hello-from-localrunner", (res, log)
 print(f"   LocalRunner: exit {res.exit}, log {res.log_path!r} -> {log!r}")
 PY
 
+echo "== measurement seam (adapter 4 via smh.toml)"
+"$WORK/venv/bin/python" - <<'PY'
+import os, sys
+sys.path.insert(0, os.getcwd())
+from smh.pipeline.measure import measurement_for
+from smh.adapters.measurement import NullMeasurementCatalog
+cat = measurement_for("demo")                      # the scaffold's smh_measure:Measure
+assert type(cat).__name__ == "Measure", type(cat)
+os.makedirs("runs", exist_ok=True)
+with open("runs/acc_echo.log", "a") as f:
+    f.write("\nFINAL step=1 eval_loss=1.2345\n")
+assert cat.eval("acc_echo") == 1.2345, cat.eval("acc_echo")
+assert cat.value("acc_echo", "EVAL") == 1.2345 and cat.b2("acc_echo") is None
+# an unregistered project id is a NULL catalog — never another project's numbers
+assert isinstance(measurement_for("nonesuch"), NullMeasurementCatalog)
+print("   measurement: Measure.eval('acc_echo') ->", cat.eval("acc_echo"), "; unknown project -> Null")
+PY
+
 echo "ACCEPTANCE PASS"

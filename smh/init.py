@@ -3,9 +3,11 @@
 Generates the minimal valid ledger a stranger needs to hit the real loop
 (harvest -> gate -> round -> graph) on their own work:
 
-    smh.toml      project + ledger + facts_catalog config (read by both seams);
-                  the top-level `project` key is ALSO the repo-default current
-                  project (config.repo_default_project), so bare-id `smh mint` /
+    smh.toml      project + ledger + facts_catalog + measurement_catalog config
+                  (+ a commented config_signature_catalog key); every seam resolves
+                  through `config.catalog_ref`. The top-level `project` key is
+                  ALSO the repo-default current project
+                  (config.repo_default_project), so bare-id `smh mint` /
                   `set-status` / `gate` route to this project, never to `ldp`
     JOURNAL.md    ## 0 (§0.2 GENERATED belief ledger, marker-fenced, seeded with
                   the example row) ; ## 1. Claims with the §1.1 Hypotheses /
@@ -14,6 +16,8 @@ Generates the minimal valid ledger a stranger needs to hit the real loop
                   shape) ; ## 3. Backlog ; ## 5.1 the compact write contract
     EVIDENCE.md   ## 2. Evidence (+ the table header, zero data rows)
     smh_facts.py  class Facts(RegexFactsCatalog): ledger from smh.config, _FACTS={}
+    smh_measure.py class Measure(RunLogMeasurement): FINAL eval_loss from runs/<tag>.log,
+                  b² undefined (None) until the project supplies a decoder
 
 Why the examples are LIVE, not commented (the spec said "commented-out"): a
 `## N.` section becomes a graph node ONLY when it contains a claim/experiment
@@ -29,17 +33,26 @@ references and NO numbers beyond the section indices, so the gate stays green.
 """
 import os
 
-# The four generated files, in dependency order (config first).
-FILES = ("smh.toml", "JOURNAL.md", "EVIDENCE.md", "smh_facts.py")
+# The five generated files, in dependency order (config first).
+FILES = ("smh.toml", "JOURNAL.md", "EVIDENCE.md", "smh_facts.py", "smh_measure.py")
 
 
 def _smh_toml(name):
     return f'''project = "{name}"
 # ledger: list of [namespace, [files...]]; one namespace for a solo project.
 ledger = [["{name}", ["JOURNAL.md", "EVIDENCE.md"]]]
-# the instance FactsCatalog as "module:Class", imported by
-# pipeline.facts._default_catalog so the gate/build read THIS project's facts.
+# Catalogs as "module:Class" — every seam resolves through smh.config.catalog_ref;
+# a key you remove resolves to a null catalog (no named facts / no measurements),
+# never to another project's.
+# FactsCatalog: named facts for the gate/build (the gate's number bag is the
+# journal regardless).
 facts_catalog = "smh_facts:Facts"
+# MeasurementCatalog: run tag -> measured scalar (the honest digest / replay).
+measurement_catalog = "smh_measure:Measure"
+# ConfigSignatureCatalog: job record -> canonical config token (`**⚙ …**`).
+# Unset = the generic signature (every parsed knob as k=v, no collapse registry);
+# register your own once a knob combination is load-bearing or known-invalid.
+# config_signature_catalog = "smh_config_sig:ConfigSig"
 '''
 
 
@@ -193,12 +206,46 @@ class Facts(RegexFactsCatalog):
 '''
 
 
+def _smh_measure_py():
+    return '''"""Generated MeasurementCatalog for this SMH project (`smh init`).
+
+Adapter 4: run tag -> a measured scalar. `Measure` is a `RunLogMeasurement`:
+`eval(tag)` parses the `FINAL ... eval_loss=<x>` line of `runs/<tag>.log` (the
+domain-agnostic leaf the core convenience base supplies); `b2(tag)` is undefined
+(None) until this project supplies its own decoder in `_b2`. Add `extra_kinds`
+for any further leaf your RE rows cite, and advertise them so the digest reports
+them. Registered in `smh.toml` as `measurement_catalog`.
+"""
+import os
+
+from smh.adapters.measurement import RunLogMeasurement
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+RUNS = os.path.join(ROOT, "runs")
+
+
+def _b2(tag):
+    """Realized effective-bits² for `tag`, or None. Replace with this project's
+    decoder (read the run's own artifact; never a scheduler-stored estimate)."""
+    return None
+
+
+class Measure(RunLogMeasurement):
+    """This project's measurement catalog: FINAL eval_loss from the run log,
+    b² from `_b2`, no extra kinds yet."""
+
+    def __init__(self):
+        super().__init__(b2_fn=_b2, runs_dir=RUNS, extra_kinds={})
+'''
+
+
 def _content(name):
     return {
         "smh.toml": _smh_toml(name),
         "JOURNAL.md": _journal_md(name),
         "EVIDENCE.md": _evidence_md(name),
         "smh_facts.py": _smh_facts_py(),
+        "smh_measure.py": _smh_measure_py(),
     }
 
 

@@ -230,7 +230,9 @@ def fit_multi(slots, need, n_gpu, affinity=None, prefer_slow=False):
         return elig[:1] or None
     by_box = {}
     for s in elig:
-        by_box.setdefault(s["remote_name"], []).append(s)
+        # one box — and, for a cluster partition whose cards carry a `node`,
+        # one NODE (DESIGN_slurm_runner §3.11); SSH slots have no node -> unchanged.
+        by_box.setdefault((s["remote_name"], s.get("node")), []).append(s)
     best = None
     for box_slots in by_box.values():
         if len(box_slots) < n_gpu:

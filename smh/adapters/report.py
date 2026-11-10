@@ -40,3 +40,15 @@ class FigureCatalog(Protocol):
         hardcoded map in `inject_figures` (`build.py:118–126`). Return `{}` to opt
         out and rely solely on inline placeholders."""
         ...
+
+
+class NullFigureCatalog(FigureCatalog):
+    """The catalog a project that registers no `figure_catalog` gets: no figures,
+    no placement. A deck built against it renders every `{{fig:ID}}` placeholder
+    as missing, which is the honest outcome — never another project's figures."""
+
+    def figures_html(self) -> tuple[str, dict[str, str]]:
+        return "", {}
+
+    def placement(self) -> dict[str, str]:
+        return {}
